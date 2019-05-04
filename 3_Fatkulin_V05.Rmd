@@ -1,0 +1,241 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+  word_document: default
+---
+*Модели*: логистическая регрессия, QDA.   
+
+*Пакеты*:   
+```{r, message = F, warning = F}
+library('ISLR')
+library('GGally')
+library('MASS')
+```
+
+Зададим ядро генератора случайных чисел и объём обучающей выборки. 
+По условию задачи доля обучающей выборки 75%
+
+```{r}
+my.seed <- 12345
+train.percent <- 0.75
+
+options("ggmatrix.progress.bar" = FALSE)
+```
+# Исходные данные: набор Default
+
+```{r, fig.height = 5, fig.width = 5, message = F, warning = F}
+head(Default)
+str(Default)
+
+# графики разброса
+ggp <- ggpairs(Default)
+print(ggp, progress = FALSE)
+```
+
+# Отбираем наблюдения в обучающую выборку
+
+```{r}
+set.seed(my.seed)
+inTrain <- sample(seq_along(Default$default),
+                  nrow(Default)*train.percent)
+df <- Default[inTrain, ]
+
+# фактические значения на обучающей выборке
+Fakt <- df$default
+```
+# Строим модели, чтобы спрогнозировать default
+
+## Логистическая регрессия
+
+Используем все оставшиеся перменные как объясняющие 
+```{r}
+model.logit <- glm(default ~. , data = df, family = 'binomial')
+summary(model.logit)
+```
+
+Как видно значима только перменная баланс - исправим модель
+```{r}
+model.logit <- glm(default ~balance , data = df, family = 'binomial')
+summary(model.logit)
+```
+
+Параметры модели логистической регрессии значимы с вероятностью 0.99.   
+
+```{r}
+# прогноз: вероятности принадлежности классу 'Yes' (дефолт)
+p.logit <- predict(model.logit, df, type = 'response')
+Prognos <- factor(ifelse(p.logit > 0.5, 2, 1),
+                  levels = c(1, 2),
+                  labels = c('No', 'Yes'))
+
+# матрица неточностей
+conf.m <- table(Fakt, Prognos)
+conf.m
+```
+Характеристики:
+```{r}
+# чувствительность
+conf.m[2, 2] / sum(conf.m[2, ])
+# специфичность
+conf.m[1, 1] / sum(conf.m[1, ])
+# верность
+sum(diag(conf.m)) / sum(conf.m)
+```
+## QDA
+```{r}
+model.qda <- qda(default ~ balance, data = Default[inTrain, ])
+model.qda
+
+# прогноз: вероятности принадлежности классу 'Yes' (дефолт)
+p.qda <- predict(model.qda, df, type = 'response')
+Prognos <- factor(ifelse(p.qda$posterior[, 'Yes'] > 0.5, 
+                         2, 1),
+                  levels = c(1, 2),
+                  labels = c('No', 'Yes'))
+
+# матрица неточностей
+conf.m <- table(Fakt, Prognos)
+conf.m
+```
+Характеристики:
+```{r}
+# чувствительность
+conf.m[2, 2] / sum(conf.m[2, ])
+# специфичность
+conf.m[1, 1] / sum(conf.m[1, ])
+# верность
+sum(diag(conf.m)) / sum(conf.m)
+```
+## ROC-кривая для QDA
+Для начала построим график совместного изменения чувствительности и специфичности с изменением вероятности отсечения от 0 до 1 -- ROC-кривую. Для примера возьмём модель LDA.  
+
+```{r, fig.width = 5, fig.height = 5, message = F, warning = F}
+# считаем 1-SPC и TPR для всех вариантов границы отсечения
+x <- NULL    # для (1 - SPC)
+y <- NULL    # для TPR
+
+# заготовка под матрицу неточностей
+tbl <- as.data.frame(matrix(rep(0, 4), 2, 2))
+rownames(tbl) <- c('fact.No', 'fact.Yes')
+colnames(tbl) <- c('predict.No', 'predict.Yes')
+
+# вектор вероятностей для перебора
+p.vector <- seq(0, 1, length = 501)
+
+# цикл по вероятностям отсечения
+for (p in p.vector){
+    # прогноз
+    Prognos <- factor(ifelse(p.qda$posterior[, 'Yes'] > p, 
+                             2, 1),
+                      levels = c(1, 2),
+                      labels = c('No', 'Yes'))
+    
+    # фрейм со сравнением факта и прогноза
+    df.compare <- data.frame(Fakt = Fakt, Prognos = Prognos)
+    
+    # заполняем матрицу неточностей
+    tbl[1, 1] <- nrow(df.compare[df.compare$Fakt == 'No' & df.compare$Prognos == 'No', ])
+    tbl[2, 2] <- nrow(df.compare[df.compare$Fakt == 'Yes' & df.compare$Prognos == 'Yes', ])
+    tbl[1, 2] <- nrow(df.compare[df.compare$Fakt == 'No' & df.compare$Prognos == 'Yes', ])
+    tbl[2, 1] <- nrow(df.compare[df.compare$Fakt == 'Yes' & df.compare$Prognos == 'No', ])
+    
+    # считаем характеристики
+    TPR <- tbl[2, 2] / sum(tbl[2, 2] + tbl[2, 1])
+    y <- c(y, TPR)
+    SPC <- tbl[1, 1] / sum(tbl[1, 1] + tbl[1, 2])
+    x <- c(x, 1 - SPC)
+}
+
+# строим ROC-кривую
+par(mar = c(5, 5, 1, 1))
+# кривая
+plot(x, y, type = 'l', col = 'blue', lwd = 3,
+     xlab = '(1 - SPC)', ylab = 'TPR', 
+     xlim = c(0, 1), ylim = c(0, 1))
+# прямая случайного классификатора
+abline(a = 0, b = 1, lty = 3, lwd = 2)
+
+# точка для вероятности 0.5
+points(x[p.vector == 0.5], y[p.vector == 0.5], pch = 16)
+text(x[p.vector == 0.5], y[p.vector == 0.5], 'p = 0.5', pos = 4)
+# точка для вероятности 0.2
+points(x[p.vector == 0.2], y[p.vector == 0.2], pch = 16)
+text(x[p.vector == 0.2], y[p.vector == 0.2], 'p = 0.2', pos = 4)
+       dev.copy(tiff ,filename="1.1.png") 
+dev.off()
+```
+#Выведем матрицу неточностей
+```{r}
+tbl
+```
+
+
+## Построим график для логистической регрессии
+
+```{r, fig.width = 5, fig.height = 5, message = F, warning = F}
+# считаем 1-SPC и TPR для всех вариантов границы отсечения
+x <- NULL    # для (1 - SPC)
+y <- NULL    # для TPR
+
+# заготовка под матрицу неточностей
+tbl <- as.data.frame(matrix(rep(0, 4), 2, 2))
+rownames(tbl) <- c('fact.No', 'fact.Yes')
+colnames(tbl) <- c('predict.No', 'predict.Yes')
+
+# вектор вероятностей для перебора
+p.vector <- seq(0, 1, length = 501)
+
+# цикл по вероятностям отсечения
+for (p in p.vector){
+    # прогноз
+    Prognos <- factor(ifelse(p.logit > p, 
+                             2, 1),
+                      levels = c(1, 2),
+                      labels = c('No', 'Yes'))
+    
+    # фрейм со сравнением факта и прогноза
+    df.compare <- data.frame(Fakt = Fakt, Prognos = Prognos)
+    
+    # заполняем матрицу неточностей
+    tbl[1, 1] <- nrow(df.compare[df.compare$Fakt == 'No' & df.compare$Prognos == 'No', ])
+    tbl[2, 2] <- nrow(df.compare[df.compare$Fakt == 'Yes' & df.compare$Prognos == 'Yes', ])
+    tbl[1, 2] <- nrow(df.compare[df.compare$Fakt == 'No' & df.compare$Prognos == 'Yes', ])
+    tbl[2, 1] <- nrow(df.compare[df.compare$Fakt == 'Yes' & df.compare$Prognos == 'No', ])
+  
+    # считаем характеристики
+    TPR <- tbl[2, 2] / sum(tbl[2, 2] + tbl[2, 1])
+    y <- c(y, TPR)
+    SPC <- tbl[1, 1] / sum(tbl[1, 1] + tbl[1, 2])
+    x <- c(x, 1 - SPC)
+}
+
+# строим ROC-кривую
+par(mar = c(5, 5, 1, 1))
+# кривая
+plot(x, y, type = 'l', col = 'red', lwd = 3,
+     xlab = '(1 - SPC)', ylab = 'TPR', 
+     xlim = c(0, 1), ylim = c(0, 1))
+# прямая случайного классификатора
+abline(a = 0, b = 1, lty = 3, lwd = 2)
+
+# точка для вероятности 0.5
+points(x[p.vector == 0.5], y[p.vector == 0.5], pch = 16)
+text(x[p.vector == 0.5], y[p.vector == 0.5], 'p = 0.5', pos = 4)
+# точка для вероятности 0.2
+points(x[p.vector == 0.2], y[p.vector == 0.2], pch = 16)
+text(x[p.vector == 0.2], y[p.vector == 0.2], 'p = 0.2', pos = 4)
+       dev.copy(tiff ,filename="1.2.png") 
+dev.off()
+```
+#Как видно Рок кривые получаются одинаковые, что вероятно является следствием неправильно построенных моделей.
+#Выведем матрицу неточностей
+```{r}
+tbl
+```
+
+#Сразу бросается в глаза, что модель определила все значения в predict.NO., что является явным признаком неверной модели.
+
